@@ -159,6 +159,17 @@ SPELL_PUNCT_OPTIONS = list(SPELL_PUNCT_CHARS.keys())
 
 VAD_MODE = os.getenv("VAD_MODE", "silero")  # "rms" or "silero"
 
+# Build identity — baked into the image at build time (see Dockerfile.server's
+# GIT_COMMIT/BUILD_TIME ARGs and docker-compose.yml's build.args), sourced
+# from the LOCAL git repo by sync.sh (this VM's checkout is not itself a git
+# repo). "unknown" means the image was built without going through sync.sh/
+# rebuild.sh — treat that as a red flag, not a missing label: it means
+# whatever's running can't be tied back to a commit. Surfaced via
+# GET /api/config and the Settings page so a deploy's actual effect is
+# always independently checkable, instead of assumed.
+GIT_COMMIT = os.getenv("GIT_COMMIT", "unknown")
+BUILD_TIME = os.getenv("BUILD_TIME", "unknown")
+
 # Opik (LLM evaluation/tracing) — optional
 OPIK_ENABLED = os.getenv("OPIK_ENABLED", "0") == "1"
 OPIK_BASE_URL = os.getenv("OPIK_BASE_URL", "http://opik-backend:8080")

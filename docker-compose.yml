@@ -89,6 +89,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.server
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
     container_name: voice-agent
     restart: unless-stopped
     runtime: nvidia

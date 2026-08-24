@@ -27,6 +27,17 @@ COPY payers/ ./payers/
 
 RUN mkdir -p /models/chatterbox/voices
 
+# Build-time version stamp — see GIT_COMMIT/BUILD_TIME in docker-compose.yml's
+# build.args, set by rebuild.sh from the actual working tree being built.
+# This is what /api/config surfaces in the Settings page: the only reliable
+# way to confirm "the code I just changed is actually what's running" is to
+# have the running app report its own build identity, since `docker restart`
+# silently keeps serving the OLD baked-in image if you forgot `--build`.
+ARG GIT_COMMIT=unknown
+ARG BUILD_TIME=unknown
+ENV GIT_COMMIT=$GIT_COMMIT
+ENV BUILD_TIME=$BUILD_TIME
+
 EXPOSE 8080
 
 CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]

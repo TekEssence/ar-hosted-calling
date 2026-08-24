@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 
 from .. import app_config, chatterbox_voices
 from ..config import (
-    KOKORO_VOICE_OPTIONS, OPIK_BASE_URL, OPIK_ENABLED,
+    BUILD_TIME, GIT_COMMIT, KOKORO_VOICE_OPTIONS, OPIK_BASE_URL, OPIK_ENABLED,
     SPELL_PUNCT_OPTIONS, SPELL_SILENCE_OPTIONS, TTS_PAUSE_MODE_OPTIONS,
     WHISPER_MODEL_SIZE, log,
 )
@@ -191,6 +191,8 @@ async def get_config():
         "llm_options": state["llm_options"],
         "opik_enabled": OPIK_ENABLED,
         "opik_url": OPIK_BASE_URL,
+        "build_commit": GIT_COMMIT,
+        "build_time": BUILD_TIME,
     }
 
 

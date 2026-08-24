@@ -25,6 +25,8 @@ interface Config {
   chatterbox_voice_options: string[];
   llm_model: string;
   llm_options: Record<string, string>;
+  build_commit: string;
+  build_time: string;
 }
 
 const SPELL_PUNCT_LABELS: Record<string, string> = {
@@ -146,6 +148,29 @@ export default function SettingsPage() {
         <p className="text-sm text-muted-foreground">Defaults applied to new calls</p>
       </div>
       {saved && <div className="rounded-md border border-green-300 px-4 py-2 text-sm text-green-700">Saved.</div>}
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Build Info</CardTitle>
+          <CardDescription>
+            What's actually running right now — check this after every deploy.
+            "unknown" means the image was built without going through sync.sh,
+            so this build can't be tied back to a commit.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-1 text-sm">
+          <div>
+            <span className="text-muted-foreground">Commit: </span>
+            <code className={cfg.build_commit === "unknown" ? "text-red-700" : ""}>
+              {cfg.build_commit === "unknown" ? "unknown" : cfg.build_commit.slice(0, 12)}
+            </code>
+          </div>
+          <div>
+            <span className="text-muted-foreground">Built: </span>
+            <code className={cfg.build_time === "unknown" ? "text-red-700" : ""}>{cfg.build_time}</code>
+          </div>
+        </CardContent>
+      </Card>
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Card>
