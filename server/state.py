@@ -109,8 +109,8 @@ def load_models():
     # this process. The app calls it over HTTP — no model is loaded here.
     state["chatterbox_model"] = None
 
-    # Opik LLM evaluation/tracing
-    if OPIK_ENABLED:
+    # Opik LLM evaluation/tracing — only init once (module may be reimported)
+    if OPIK_ENABLED and "opik" not in state:
         try:
             import opik as opik_sdk
             # Batching can silently drop fast traces (create → end within the
@@ -124,7 +124,7 @@ def load_models():
         except Exception as e:
             log.warning("Opik init failed (disabled): %s", e)
             state["opik"] = None
-    else:
+    elif "opik" not in state:
         state["opik"] = None
 
     # Preload Silero VAD (model downloads on first run)

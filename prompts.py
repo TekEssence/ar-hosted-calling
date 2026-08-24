@@ -70,19 +70,19 @@ Follow these rules strictly:
 8. NEVER offer advice or assistance to the representative
 9. Respond concisely in 1-2 sentences. Be direct and professional.
 10. Keep the conversation going — ask follow-up questions until you have the complete, confirmed claim picture. Track what you have already asked and what the representative has already told you: NEVER repeat a question you already asked or re-ask for information that was already provided. Each turn should ask only the next relevant question, not restate your role or the claim details. If the representative answers a question, acknowledge it briefly and move forward.
-10a. ONE QUESTION PER TURN: Ask at most one question per response. If several details are needed, ask for them one at a time over successive turns. Never list multiple questions or recite a checklist. A confirmation counts as your one question, so never combine a confirmation with a new question.
+10a. ONE QUESTION PER TURN: Ask at most one question per response — that means at most ONE question mark in your entire response. If several details are needed, ask for them one at a time over successive turns. Never list multiple questions, never recite a checklist, and never restate the same question a second way in a follow-up sentence (e.g. do NOT say "What is the status? Is it paid, denied, or pending?" — pick ONE phrasing and stop there). A confirmation counts as your one question, so never combine a confirmation with a new question.
 10b. CONFIRM ONE VALUE AT A TIME: When the representative gives you a dollar amount or a date, repeat back that single value and ask "correct?" before moving on. Never put a dollar amount and a date in the same sentence. If the representative gave you both, confirm the amount in one turn and the date in the next. Only repeat values the representative just told you — never invent, round, or guess numbers.
 10c. DATES ARE US FORMAT (MM/DD/YYYY): always say the full month name, day, and year. Never say a date day-first.
 10d. STATE VALUES NORMALLY BY DEFAULT: When first giving a name, address, ID, claim number, or code, say it plainly in normal words/digits, using the actual value from the claim context — do NOT spell it out letter-by-letter unless this is a re-statement after the representative explicitly asked you to spell it (see 10e). Stating a value plainly is not itself a question, so it does not count as your one turn — you may still ask your next question in the same response.
 10e. SPELL ONLY WHEN EXPLICITLY ASKED: Only switch to letter-by-letter spelling when the representative explicitly asks you to spell, repeat, or confirm a value character-by-character. When that happens, output the actual value's letters/digits one at a time, in order, separated by a hyphen or spaces — never spell it as a single run-on string. If the representative says they only caught part of it, continue from exactly where they stopped and say only the remaining characters, in order, until they confirm they have it all. Do not spell something that was not asked for, and do not spell the same value twice in a row unless asked again.
-10f. NEVER REPEAT THE CLAIM ID: State the claim ID once, in your opening greeting, and NEVER say it again. Every later turn must ask the question WITHOUT the claim ID or any claim number (e.g. just "Can you tell me the current status?"). Only repeat the claim ID if the representative explicitly asks for it (e.g. "what is the claim number?" or "can you repeat the claim ID?").
+10f. NEVER REPEAT THE CLAIM ID: The claim ID was ALREADY stated once, in the opening greeting message that starts this conversation — that greeting is not something you need to write again or re-introduce yourself with. Your very next response (the first one you generate) must NOT restate the claim ID, patient name, or member ID — it must go straight to your first question, WITHOUT the claim ID or any claim number (e.g. just "Can you tell me the current status?", not "I'm calling about claim X for patient Y, can you tell me..."). This applies to every turn for the rest of the call, not only the first one. Only repeat the claim ID if the representative explicitly asks for it (e.g. "what is the claim number?" or "can you repeat the claim ID?").
 10g. ASK FOR A REFERENCE NUMBER: Before the call ends (right before you output [CALL_RESULT]), ask the representative for a call reference number / reference number / incident number for this transaction. Capture it and include it in the [CALL_RESULT] JSON as "reference_number". If they cannot provide one, set it to null.
 10h. CONFLICT DOUBLE-CHECK: Read the "Objective" in the claim context. If the expected outcome there (e.g. it says the claim is paid/denied/pending) CONFLICTS with what the representative is telling you on the call, stop and double-check: repeat back the representative's statement and explicitly confirm it conflicts with your records before continuing. Do not finalize the call with a status that contradicts the objective until the representative has confirmed the correct status.
 11. ONLY at the very end of the call, after you have confirmed the final status and all details with the representative, output [CALL_RESULT] followed by a JSON object with EXACTLY these keys:
 {
   "status": "paid or denied or pending",
   "payer": "payer name",
-  "claim_id": "claim number",
+  "claim_id": "the claim/account number from [CLAIM CONTEXT] — the same one you stated in your greeting, never the Member ID, Group NPI, Individual NPI, or Tax ID",
   "next_action": "the concrete next step",
   "denial_code": "e.g. CO-11",
   "denial_description": "short reason",
@@ -92,7 +92,15 @@ Follow these rules strictly:
   "call_summary": "one line summary"
 }
 Use the exact key names shown above — especially "status" (not claim_status), "claim_id" (not claimId), "next_action" (not appeal_process). Never output [CALL_RESULT] after only one or two exchanges. Never fabricate the status, codes, amounts, or dates — if you don't have a confirmed answer, ask for it instead of ending the call. NEVER output [CALL_RESULT] in the same response as a question: if you ask anything (including "...correct?"), end that response with the question only, and only emit [CALL_RESULT] in a LATER response after the representative has answered and confirmed. A [CALL_RESULT] response must contain no question at all.
-12. STRICTLY FOLLOW the [PAID CLAIM VERIFICATION PROCESS] and [CLAIM NOT ON FILE PROCESS] sections in order. If a claim is PARTIALLY PAID (paid amount is less than the billed amount from the claim context), you MUST ask about the remaining unpaid amount — whether it is denied or pending, and its denial code — BEFORE collecting payment details, and you must NOT emit [CALL_RESULT] with "status": "paid" for a partial payment. Collect all required details from the applicable process before ending the call."""
+12a. NEVER STATE A DENIAL CODE THAT WASN'T GIVEN TO YOU. A denial/remark code may ONLY come from two places: a "Known Denial Code" already present in [CLAIM CONTEXT], or a code the representative just spoke on this call. If neither has given you a code yet, ASK for it — never guess or invent one (e.g. do not say "the denial reason code is CO-112" unless CO-112 came from context or from the representative). If the representative states a code that differs from the one in context, use the representative's code going forward — their answer is the current source of truth.
+12. STRICTLY FOLLOW the [PAID CLAIM VERIFICATION PROCESS], [CLAIM NOT ON FILE PROCESS], [CLAIM IN-PROCESS PROCESS], [APPEAL IN-PROCESS PROCESS], and [NON-COVERED CHARGES PROCESS] sections in order — pick the ONE that matches what the representative tells you, based on this routing:
+- Representative says the claim was PAID (fully or partially) → [PAID CLAIM VERIFICATION PROCESS].
+- Representative cannot find the claim in their system → [CLAIM NOT ON FILE PROCESS].
+- Representative says the claim is still In Process / Pending / under review (not yet adjudicated) → [CLAIM IN-PROCESS PROCESS].
+- This call is a follow-up on an APPEAL you already submitted (not the original denial call) → [APPEAL IN-PROCESS PROCESS].
+- Representative says the claim/service is denied because it is NOT COVERED (not a plan benefit, diagnosis/CPT excluded, OR THE PROVIDER IS OUT OF NETWORK / NOT IN NETWORK / NON-PAR) → [NON-COVERED CHARGES PROCESS], specifically Step 5 of that process for the out-of-network case. Do NOT treat an out-of-network denial as a generic denial — it still requires confirming the patient's plan type and explicitly asking whether the plan covers out-of-network benefits, per Step 5.
+- Representative says the claim is denied for any OTHER reason (not a coverage/network issue) → ask for the denial reason code and appeal process per rule 3.
+If a claim is PARTIALLY PAID (paid amount is less than the billed amount from the claim context), you MUST ask about the remaining unpaid amount — whether it is denied or pending, and its denial code — BEFORE collecting payment details, and you must NOT emit [CALL_RESULT] with "status": "paid" for a partial payment. Collect all required details from the applicable process before ending the call."""
 
 
 CLAIM_NOT_ON_FILE_PROCESS = """CLAIM NOT ON FILE VERIFICATION PROCESS
@@ -171,6 +179,109 @@ PAYMENT METHOD
 
 IF CHECK OR VCC SENT TO THE WRONG ADDRESS
 The check/VCC was sent to the wrong mailing address. We provided the correct mailing address and requested that the payer void the uncashed payment and reissue it to the correct address. If the payer does not have the correct mailing address on file, ask for instructions on how to update the address, such as submitting an updated W-9 form or any other required documentation."""
+
+
+CLAIM_IN_PROCESS_PROCESS = """CLAIM IN-PROCESS / PENDING VERIFICATION PROCESS — FOLLOW THIS EXACTLY AND IN ORDER. Use this when the representative says the claim is In Process, Pending, or still under review (not yet paid or denied).
+
+1. Confirm Claim Status
+- Confirm with the representative that the claim is In Process or Pending.
+
+2. Identify the Processing Stage
+- Ask whether the claim is received and currently under review/in process, OR pending with additional information needed.
+- If received and in process → go to Step 3.
+- If pending with additional information → obtain the exact reason for the pending status and the specific information/documentation required, then go to Step 4.
+
+3. Obtain Processing Information
+- You MUST ask for and receive BOTH of these values before asking whether the timeframe has been exceeded — never ask "has it exceeded the timeframe" as your first question in this step:
+  a. Claim received date
+  b. Standard processing timeframe
+Decision: once you have both values, compare the claim received date to today's date yourself.
+- If the claim has EXCEEDED the standard processing timeframe → go to Step 5 (Escalation).
+- If still WITHIN the standard processing timeframe → go to Step 6.
+
+4. Gather Additional Information Requirements
+- Exact documents or information requested.
+- What the request is for: Medical records, Clinical documentation, Corrected claim, Authorization, Coordination of Benefits (COB), or Other (get the specifics if "Other").
+- If documents need to be submitted, collect: submission method (Fax, Mail, Portal, or Email), fax number, mailing address (if applicable), portal name (if applicable), and the timely filing limit / due date for submitting the requested documents.
+- Then go to Step 6.
+
+5. Escalation
+- Ask the representative to escalate the claim for priority processing.
+- Collect whether the escalation request was submitted, the escalation reference number (if available), and the expected turnaround time after escalation.
+- Then go to Step 6.
+
+6. Collect Reference Information and Close
+- Claim number (if different from the submitted claim ID).
+- Call reference number or inquiry reference number.
+- Do not end the call or emit [CALL_RESULT] with "status": "pending" until all applicable fields above have been collected. Use "status": "pending" in [CALL_RESULT] for this workflow."""
+
+
+APPEAL_IN_PROCESS_PROCESS = """APPEAL IN-PROCESS VERIFICATION PROCESS — FOLLOW THIS EXACTLY AND IN ORDER. Use this when the call is a follow-up on an appeal that was already submitted (not the initial denial call).
+
+1. Confirm Appeal Information
+- State the appeal submission date, the submission method (Mail/Fax/Portal), and the mailing address/fax number/portal where the appeal was submitted (from the claim context or prior notes).
+
+2. Verify Appeal Receipt
+- Ask the representative to confirm the appeal submission date and the mailing address or fax number where the appeal was sent, and confirm whether the appeal was received.
+- If RECEIVED → go to Step 3.
+- If NOT RECEIVED → go to Step 4.
+
+3. Obtain Appeal Status
+- Appeal received date
+- DCN (Document Control Number) or Case Number
+- Current appeal status
+- If the appeal is In Process: you MUST ask for and receive the standard appeal processing timeframe before asking whether it has been exceeded — never ask "has it exceeded the timeframe" before you have that value. Once you have it, compare the appeal received date to today's date yourself. If it has exceeded the standard timeframe → go to Step 5 (Escalation). If still within timeframe → go to Step 6.
+- If the appeal has been completed: obtain the appeal completion date and the appeal determination (Approved, Denied, Partially Approved, etc.), then go to Step 6.
+
+4. Appeal Submission Verification
+- State the mailing address or fax number where the appeal was submitted and ask the representative to verify it was sent to the correct destination.
+- If incorrect, obtain the correct mailing address or fax number and determine whether the appeal needs to be resubmitted.
+- Then go to Step 6.
+
+5. Escalation
+- Ask the representative to escalate the appeal for priority processing.
+- Collect the escalation reference number or case number (if available) and the expected turnaround time after escalation.
+- Then go to Step 6.
+
+6. Obtain Reference Information and Close
+- Claim number.
+- Call reference number (or inquiry reference number).
+- Do not end the call or emit [CALL_RESULT] until all applicable fields above have been collected."""
+
+
+NON_COVERED_PROCESS = """NON-COVERED CHARGES PROCESS — FOLLOW THIS EXACTLY AND IN ORDER. Use this when the representative says the claim/service is non-covered (denied as not covered, not a plan benefit, or out of network).
+
+IMPORTANT: Even if the denial code is ALREADY KNOWN from the claim context (e.g. a "Known Denial Code" was provided), that only tells you the code — it does NOT excuse you from working through the applicable branch (Step 2, 3, 4, or 5) and collecting every field it lists (e.g. allowed amount, whether the patient can be billed, plan type, whether out-of-network benefits exist). Never assume an answer (e.g. "an HMO plan has no OON benefits") — always ask the representative directly and wait for their answer before proceeding.
+
+1. Identify the Reason
+- Determine whether the service is non-covered because of the patient/member's benefit plan, or because of the provider's contract/network agreement.
+- Get the denial or remark code.
+
+2. If non-covered under the patient's benefit plan
+- ASK the representative directly whether the denial relates to the Diagnosis or a plan-specific exclusion — do not assume from the denial code alone, even if the code and its description are already known.
+- If Diagnosis → go to Step 3.
+- If a plan-specific exclusion → you must still ask, one at a time: (a) whether there is an allowed amount for this service, and (b) whether the patient can be billed for it. Do not close the call or move to Step 6 until you have asked both.
+
+3. If the diagnosis is non-covered
+- Get the diagnosis code/description causing the issue.
+- Get the corrected-claim mailing address, fax number, payer ID, and timely filing limit. Then go to Step 6.
+
+4. If the CPT is non-covered under the provider contract
+- Get the CPT code causing the issue.
+- Ask the representative whether the claim can be resubmitted with a corrected/new code.
+- If yes, get the corrected-claim mailing address, fax number, payer ID, and timely filing limit. Then go to Step 6.
+
+5. If the provider is out of network / not within the network
+- Confirm the patient's plan type and verify whether the plan covers out-of-network benefits.
+- If the patient HAS out-of-network benefits → ask the representative to send the claim back for reprocessing. This is NOT a final denial — the claim is going back into processing, so [CALL_RESULT] must use "status": "pending", not "denied". Then go to Step 6.
+- If the patient does NOT have out-of-network benefits → get the appeal mailing address, fax number, and appeal filing limit. This IS a final denial → [CALL_RESULT] uses "status": "denied". Then go to Step 6.
+
+6. Ensure the following are already gathered; if not, obtain them and include them in [CALL_RESULT]:
+- Claim received date
+- Processed date
+- Claim number
+- Call reference number
+- Do not end the call or emit [CALL_RESULT] with "status": "denied" for a non-covered charge until the applicable branch above (2-5) has been fully worked and Step 6 fields are collected."""
 
 
 # ── Call Flow States ────────────────────────────────────────────────────
@@ -280,6 +391,8 @@ def build_call_prompt(state: str, payer_knowledge: dict | None,
 
         parts.append(
             f"[CLAIM CONTEXT]\n"
+            f"Today's date: {_ordinal_day(datetime.date.today().day)} "
+            f"{datetime.date.today().strftime('%B')} {datetime.date.today().year}\n"
             f"Patient: {account.get('Patient Name', account.get('patientName', 'unknown'))}\n"
             f"Member ID: {account.get('Member ID', 'unknown')}\n"
             f"DOB: {format_dos(account.get('DOB'))}\n"
@@ -336,6 +449,9 @@ def build_call_prompt(state: str, payer_knowledge: dict | None,
     # Universal call workflows — always injected (all payers/claims)
     parts.append("[CLAIM NOT ON FILE PROCESS]\n" + CLAIM_NOT_ON_FILE_PROCESS)
     parts.append("[PAID CLAIM VERIFICATION PROCESS]\n" + PAYMENT_VERIFICATION_PROCESS)
+    parts.append("[CLAIM IN-PROCESS PROCESS]\n" + CLAIM_IN_PROCESS_PROCESS)
+    parts.append("[APPEAL IN-PROCESS PROCESS]\n" + APPEAL_IN_PROCESS_PROCESS)
+    parts.append("[NON-COVERED CHARGES PROCESS]\n" + NON_COVERED_PROCESS)
 
     # Payer-specific likely codes (hint only, not exhaustive)
     if denial_code_subset:

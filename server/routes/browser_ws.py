@@ -266,8 +266,12 @@ async def browser_voice_loop(ws: WebSocket, session_id: str):
             bot_text = ""
             usage = None
             try:
+                # 260, not 150: a [CALL_RESULT] JSON block (status/payer/claim_id/
+                # next_action/denial fields/call_summary) routinely runs
+                # 180-230 tokens: a 150-token cap truncates it mid-string, which
+                # fails JSON parsing and drops the whole call result.
                 stream = await state["llm_client"].chat.completions.create(
-                    model=state["llm_model"], messages=conv, max_tokens=150, temperature=0,
+                    model=state["llm_model"], messages=conv, max_tokens=260, temperature=0,
                     stream=True, stream_options={"include_usage": True})
                 async for chunk in stream:
                     if getattr(chunk, "usage", None):
