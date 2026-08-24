@@ -14,12 +14,18 @@ routing changes — to catch regressions before they reach a live call.
 ## How it works
 
 - `cases.py` — one test case per branch of every workflow doc (currently
-  12). Each case has a scripted "insurance rep" persona: a set of
-  keyword-triggered canned answers (`keyword_answers`) for branch-deciding
-  yes/no questions, a FIFO `script` for sequential factual asks (dates,
-  amounts, addresses), and a `required` list of regexes that must show up
-  somewhere in the agent's own turns (i.e. it actually asked about that
-  topic), plus the `expected_status` the call should close with.
+  20: the 3 newer docs — Claim In-Process, Appeal In-Process, Non-Covered
+  Charges — plus the pre-existing Paid Claim Verification, Claim Not On
+  File, and generic-denial paths). Each case has a scripted "insurance rep"
+  persona: a set of keyword-triggered canned answers (`keyword_answers`)
+  for branch-deciding yes/no questions and sequential factual asks, a FIFO
+  `script` as a fallback for anything not keyword-matched, and a `required`
+  list of regexes that must show up somewhere in the agent's own turns
+  (i.e. it actually asked about that topic), plus the `expected_status`
+  the call should close with. For workflows with many sequential fields
+  (e.g. Paid Claim Verification), prefer keyword-routing every field over
+  relying on FIFO order — see the comment above the "Paid Claim
+  Verification" cases for why.
 - `runner.py` — builds the real system prompt via `build_call_prompt`,
   simulates the call turn-by-turn against the LLM (same message shaping as
   `server/routes/browser_ws.py`: system + greeting + `[INSURANCE REP] `
@@ -83,8 +89,8 @@ Each case prints one of:
 
 The summary line splits both counts:
 ```
-8/12 passed strictly (incl. style nits).
-8/12 passed on content (required fields + correct status).
+0/20 passed strictly (incl. style nits).
+8/20 passed on content (required fields + correct status).
 ```
 Always look at the **content** number first — it's what "does the agent
 actually follow the scenario" means. The strict number additionally
@@ -109,6 +115,20 @@ the conversation went wrong.
   `non_covered_oon_no_benefits_appeal`) it occasionally drifts into a
   generic-denial tangent instead of finishing that branch's specific
   fields (allowed amount / bill-patient / appeal address).
+- **Hardest confirmed limitation**: `paid_fully_eft`, `paid_fully_check_cashed`,
+  `paid_vcc_expired_reissue`, `paid_check_wrong_address_reissue`. Once the
+  representative confirms the claim was "paid in full" and states the paid
+  amount, the model treats the call as essentially done — it asks one filler
+  question ("what was the expected payment date?", which isn't even part of
+  the workflow) and closes, skipping CPT code, allowed amount, contractual
+  adjustment, patient responsibility, payment method, and every
+  method-specific field (check/EFT/VCC number, dates, mailing address, EOB
+  fax). This reproduced identically across multiple runs at `temperature=0`
+  even after `PAYMENT_VERIFICATION_PROCESS` Step 3 in `prompts.py` was
+  rewritten to explicitly say "confirming the paid amount does NOT complete
+  this step" — the instruction is simply not being followed. This is the
+  single strongest piece of evidence in this test suite that the model's
+  long-instruction-following has a hard ceiling, not a prompt-wording gap.
 
 These come from testing on `hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4`
 (8B, INT4-quantized) — tightening the prompt further to chase these

@@ -38,6 +38,13 @@ def rep_reply(script, agent_text, fallback, given_ref, keyword_answers):
         if re.search(entry["pattern"], low, re.I):
             entry["used"] = True
             return entry["answer"]
+    # A bare confirmation ("$450 correct?") that doesn't restate the field
+    # name won't match any keyword_answers entry -- affirm it rather than
+    # falling through to `fallback`, which reads as "no more info" and
+    # causes the agent to wrap up the call early even though it isn't done.
+    stripped = agent_text.strip()
+    if stripped.endswith("?") and re.search(r"\bcorrect\?\s*$", stripped, re.I):
+        return "Yes, that's correct."
     if script:
         return script.pop(0)
     return fallback

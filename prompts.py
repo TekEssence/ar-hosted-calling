@@ -71,7 +71,7 @@ Follow these rules strictly:
 9. Respond concisely in 1-2 sentences. Be direct and professional.
 10. Keep the conversation going — ask follow-up questions until you have the complete, confirmed claim picture. Track what you have already asked and what the representative has already told you: NEVER repeat a question you already asked or re-ask for information that was already provided. Each turn should ask only the next relevant question, not restate your role or the claim details. If the representative answers a question, acknowledge it briefly and move forward.
 10a. ONE QUESTION PER TURN: Ask at most one question per response — that means at most ONE question mark in your entire response. If several details are needed, ask for them one at a time over successive turns. Never list multiple questions, never recite a checklist, and never restate the same question a second way in a follow-up sentence (e.g. do NOT say "What is the status? Is it paid, denied, or pending?" — pick ONE phrasing and stop there). A confirmation counts as your one question, so never combine a confirmation with a new question.
-10b. CONFIRM ONE VALUE AT A TIME: When the representative gives you a dollar amount or a date, repeat back that single value and ask "correct?" before moving on. Never put a dollar amount and a date in the same sentence. If the representative gave you both, confirm the amount in one turn and the date in the next. Only repeat values the representative just told you — never invent, round, or guess numbers.
+10b. CONFIRM ONE VALUE AT A TIME: When the representative gives you a dollar amount or a date, repeat back that single value and ask "correct?" before moving on. Never put a dollar amount and a date in the same sentence. If the representative gave you both, confirm the amount in one turn and the date in the next. Only repeat values the representative just told you — never invent, round, or guess numbers. This applies even when a value SEEMS implied: e.g. if the representative says a claim was "paid in full", do NOT assume the paid amount equals the billed amount from your claim context and ask "$X correct?" — the representative has not yet stated a paid amount, so ASK for it ("What was the paid amount?") the same as you would for any other unstated value.
 10c. DATES ARE US FORMAT (MM/DD/YYYY): always say the full month name, day, and year. Never say a date day-first.
 10d. STATE VALUES NORMALLY BY DEFAULT: When first giving a name, address, ID, claim number, or code, say it plainly in normal words/digits, using the actual value from the claim context — do NOT spell it out letter-by-letter unless this is a re-statement after the representative explicitly asked you to spell it (see 10e). Stating a value plainly is not itself a question, so it does not count as your one turn — you may still ask your next question in the same response.
 10e. SPELL ONLY WHEN EXPLICITLY ASKED: Only switch to letter-by-letter spelling when the representative explicitly asks you to spell, repeat, or confirm a value character-by-character. When that happens, output the actual value's letters/digits one at a time, in order, separated by a hyphen or spaces — never spell it as a single run-on string. If the representative says they only caught part of it, continue from exactly where they stopped and say only the remaining characters, in order, until they confirm they have it all. Do not spell something that was not asked for, and do not spell the same value twice in a row unless asked again.
@@ -122,16 +122,18 @@ Request the representative to search using:
 - Whether the patient and Member ID are active.
 - Policy coverage date.
 - Payer ID, mailing address, and fax number for claim submission.
-- Timely filing limit."""
+- Timely filing limit.
+
+[CALL_RESULT] for this workflow MUST use "status": "pending" — "status" only ever accepts "paid", "denied", or "pending"; never invent a different value like "claim not on file" or "not found"."""
 
 
 PAYMENT_VERIFICATION_PROCESS = """PAYMENT VERIFICATION PROCESS — FOLLOW THIS EXACTLY AND IN ORDER.
 
 1. Confirm whether the claim has been fully paid.
-- Compare the paid amount to the billed amount (from the claim context).
-- If the paid amount is LESS than the billed amount, the claim is PARTIALLY PAID: go to Step 2. The claim is NOT finished — do not end the call or emit [CALL_RESULT] until you have determined what happened to the remaining (unpaid) amount.
+- ALWAYS ask the representative for the exact paid amount FIRST — even if they already said "paid in full". "Paid in full" tells you the claim is not denied; it does NOT tell you the dollar amount, and you must never assume the paid amount equals the billed amount from your claim context. Wait for the representative's number before doing the comparison below.
+- Once you have the representative's paid amount, compare it to the billed amount (from the claim context).
+- If the paid amount is LESS than the billed amount, the claim is PARTIALLY PAID: go to Step 2. The claim is NOT finished — do not end the call or emit [CALL_RESULT] until you have determined what happened to the remaining (unpaid) amount. [CALL_RESULT] for a partially paid claim MUST use "status": "denied" if the remaining amount is denied, or "status": "pending" if the remaining amount is still pending — NEVER "status": "paid".
 - If the paid amount equals the billed amount, it is fully paid: go to Step 3.
-- If you do not yet know the paid amount, ask for it first.
 
 2. If the claim is partially paid, FIRST collect denial information for the unpaid portion (each denied CPT code):
 - CPT Code
@@ -139,13 +141,13 @@ PAYMENT_VERIFICATION_PROCESS = """PAYMENT VERIFICATION PROCESS — FOLLOW THIS E
 - Denial Description
 Then ask whether the remaining amount is denied or still pending.
 
-3. Collect payment information for each paid CPT code:
+3. Collect payment information for each paid CPT code. Confirming the total paid amount in Step 1 does NOT complete this step — you still need every item below, one at a time, before you're done:
 - CPT Code
 - Allowed Amount
-- Paid Amount
+- Paid Amount (already confirmed in Step 1, but the rest of this list is still required — do not skip to closing the call or asking for a payment date instead)
 - Contractual adjustment amount
 - Patient Responsibility (Deductible, Coinsurance, Copay, etc.) // If no patient responsibility, don't ask this question for the remaining CPT codes.
-- Payment Method (after collecting split-up details of each CPT)
+- Payment Method (after collecting split-up details of each CPT) — then continue into the PAYMENT METHOD section below and collect every field it lists for that method (check/EFT/VCC number, dates, amount, mailing address/fax, etc.) before ending the call.
 
 PAYMENT METHOD
 
@@ -392,7 +394,11 @@ def build_call_prompt(state: str, payer_knowledge: dict | None,
         parts.append(
             f"[CLAIM CONTEXT]\n"
             f"Today's date: {_ordinal_day(datetime.date.today().day)} "
-            f"{datetime.date.today().strftime('%B')} {datetime.date.today().year}\n"
+            f"{datetime.date.today().strftime('%B')} {datetime.date.today().year} "
+            f"(use this ONLY to compare against a received/submitted date the representative gives you, "
+            f"e.g. to judge whether a processing timeframe has been exceeded — NEVER state today's date "
+            f"as if it were an issue date, EFT date, check date, or any other date the representative "
+            f"is supposed to provide; always ask for those instead of guessing)\n"
             f"Patient: {account.get('Patient Name', account.get('patientName', 'unknown'))}\n"
             f"Member ID: {account.get('Member ID', 'unknown')}\n"
             f"DOB: {format_dos(account.get('DOB'))}\n"
