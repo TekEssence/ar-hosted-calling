@@ -30,9 +30,12 @@ echo "==> Syncing commit ${GIT_COMMIT:0:12}${DIRTY} to $HOST..."
 # NEVER sync .env: it's gitignored and host-specific (PUBLIC_DOMAIN, API
 # keys, etc.) — this bit us once already. A local .env with a different
 # PUBLIC_DOMAIN silently overwrote the VM's, which broke Caddy's TLS cert
-# lookup (it's keyed by domain) and took HTTPS down until caught and fixed
-# by hand. If you need to change a value in the VM's .env, SSH in and edit
-# it directly — never push it from a local checkout.
+# lookup (it's keyed by domain) and took HTTPS down, and separately wiped
+# OPIK_ENABLED/OPIK_BASE_URL, until both were caught and fixed by hand.
+# If you need to change a value in the VM's .env, SSH in and edit it
+# directly — never push it from a local checkout. See .env.example for
+# what should be in there and why (in particular OPIK_BASE_URL's value is
+# non-obvious — it's explained there).
 rsync -avz -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no" \
   --exclude .git --exclude infra --exclude __pycache__ --exclude .env \
   --exclude 'frontend/node_modules' --exclude 'frontend/.next' \
