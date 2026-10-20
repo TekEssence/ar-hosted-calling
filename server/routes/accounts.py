@@ -8,7 +8,7 @@ from fastapi import APIRouter, File, Request, UploadFile
 from fastapi.responses import JSONResponse
 from openpyxl import load_workbook
 
-from prompts import build_call_prompt
+from prompts import build_call_prompt, compose_call_prompt, supplemental_instructions
 
 from ..config import log
 from ..state import state
@@ -61,6 +61,7 @@ HEADER_ALIASES = {
     "denial code": "Denial Code",
     "denial": "Denial Code",
     "notes": "Notes",
+    "call workflow": "Call Workflow",
     "uid": "UID",
 }
 
@@ -89,21 +90,14 @@ async def _resolve_account(project_id: str, row_num: int) -> tuple[str | None, d
 
 
 async def _effective_prompt(account: dict | None) -> str:
-    """System prompt for an account: custom override if set, else the built default.
-    Notes are appended in either case."""
+    """Always use fresh account facts; custom context supplies lower-priority preferences."""
     if not account:
-        return build_call_prompt("GREETING", None, None, None)
+        return compose_call_prompt(None)
     uid = account.get("UID", "")
     custom = None
     if uid:
         custom = await state["redis"].get(f"account:{uid}:llm_context")
-    notes = account.get("Notes", "")
-    if custom:
-        prompt = custom
-        if notes:
-            prompt += f"\n\n[PRIOR CALL NOTES]\n{notes}"
-        return prompt
-    return build_call_prompt("GREETING", None, None, account)
+    return compose_call_prompt(account, custom)
 
 
 @router.get("/api/accounts/{account_uid}/llm-context")
@@ -112,7 +106,11 @@ async def get_llm_context(account_uid: str):
     custom = await state["redis"].get(f"account:{account_uid}:llm_context") or ""
     original = build_call_prompt("GREETING", None, None, account)
     effective = await _effective_prompt(account)
-    return {"account_uid": account_uid, "custom": custom, "original": original, "effective": effective}
+    mode, instructions = supplemental_instructions(custom)
+    return {"account_uid": account_uid, "custom": custom, "original": original, "effective": effective,
+            "context_mode": mode, "additional_instructions": instructions,
+            "composition_notice": "Current spreadsheet facts and Final Comments are always included. "
+                                  "Custom instructions supplement, never replace, the default rules."}
 
 
 @router.post("/api/accounts/{account_uid}/llm-context")

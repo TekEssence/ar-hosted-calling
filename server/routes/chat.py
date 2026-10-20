@@ -10,7 +10,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from openpyxl import Workbook
 
-from prompts import strip_markers
+from prompts import strip_markers, conversation_messages, avoid_repeated_question
 
 from ..state import opik_end_trace, opik_span, opik_start_trace, state
 from .accounts import _effective_prompt, _resolve_account
@@ -74,9 +74,11 @@ async def chat_with_llm(request: Request):
     history = [json.loads(x) for x in raw] if raw else []
 
     messages = [{"role": "system", "content": system_prompt}]
-    for t in history[-16:]:
+    for t in history:
         messages.append({"role": t["role"], "content": t["text"]})
     messages.append({"role": "user", "content": message})
+    complete_conversation = messages
+    messages = conversation_messages(messages)
 
     trace = opik_start_trace("chat.turn", f"chat:{account_uid}",
                              {"messages": messages[-2:]},
@@ -87,6 +89,8 @@ async def chat_with_llm(request: Request):
         resp = await state["llm_client"].chat.completions.create(
             model=state["llm_model"], messages=messages, max_tokens=300, temperature=0)
         reply_raw = resp.choices[0].message.content.strip()
+        reply_raw = await avoid_repeated_question(state["llm_client"], state["llm_model"], messages,
+                                                  reply_raw, complete_conversation, max_tokens=300)
     except Exception as e:
         opik_end_trace(trace, error=str(e))
         return JSONResponse({"error": f"LLM error: {e}"}, 500)

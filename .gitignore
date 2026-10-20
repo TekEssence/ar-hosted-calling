@@ -2,7 +2,27 @@
 **/.next/
 **/node_modules/
 **/__pycache__/
+*.py[cod]
+*.tsbuildinfo
+.DS_Store
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
 # Native Chatterbox (Mac) venv + scratch
 chatterbox-venv/
 *.log
+
+# Host-specific secrets and SSH keys must not be newly committed.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.hybrid.env
+.hybrid-images.env
+.hybrid-images.partial

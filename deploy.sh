@@ -50,6 +50,10 @@ rsync -avz --exclude infra/ --exclude .git/ "$(cd "$(dirname "$0")" && pwd)/" "a
 echo "==> Starting containers ($MODE)..."
 ssh "azureuser@$IP" "cd /opt/ar-voice-agent/deploy && docker compose --profile $MODE up -d --build"
 
+# Set up auto-start on VM reboot so containers start after VM restart (e.g. after nightly deactivation)
+echo "==> Configuring VM auto-start on reboot..."
+ssh "azureuser@$IP" "(crontab -l 2>/dev/null; echo '@reboot cd /opt/ar-voice-agent/deploy && docker compose --profile prod --profile tls up -d') | crontab -"
+
 echo ""
 echo "==> Done!"
 echo "    Health:  http://$IP:8080/health"

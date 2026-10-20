@@ -200,7 +200,7 @@ export function ProjectRowView({ projectId, rowNum }: { projectId: string; rowNu
           <Card>
             <CardHeader>
               <CardTitle>LLM Context</CardTitle>
-              <CardDescription>Custom system prompt for this account's chats & calls (notes are appended automatically)</CardDescription>
+              <CardDescription>Current spreadsheet facts + Final Comments objective + optional additional instructions. Show Current Context previews the effective prompt.</CardDescription>
             </CardHeader>
             <CardContent>
               <LlmContextEditor accountUid={acct["UID"] || ""} />

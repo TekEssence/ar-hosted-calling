@@ -4,7 +4,27 @@ Twilio Media Streams: 8kHz μ-law mono, base64-encoded JSON payloads.
 Whisper expects:      16kHz float32 mono.
 Piper TTS outputs:    native sample rate (e.g. 22050Hz) int16 PCM.
 """
+import logging
+import math
+import os
+
 import numpy as np
+
+_stt_log = logging.getLogger("ar-voice-agent.stt")
+
+
+def _stt_setting(name: str, default: float) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+        return value if math.isfinite(value) else default
+    except ValueError:
+        return default
+
+
+STT_MIN_AUDIO_MS = max(0, _stt_setting("STT_MIN_AUDIO_MS", 120))
+STT_MIN_RMS = max(0, _stt_setting("STT_MIN_RMS", 0.0001))
+STT_WEAK_LOGPROB = _stt_setting("STT_WEAK_LOGPROB", -1.0)
+STT_HIGH_NO_SPEECH = min(1, max(0, _stt_setting("STT_HIGH_NO_SPEECH", 0.8)))
 
 BIAS = 0x84
 CLIP = 32635
@@ -161,12 +181,73 @@ STT_OFFLINE_PARAMS = dict(
 )
 
 
-def transcribe_live(stt_model, audio: np.ndarray) -> str:
-    """Transcribe a VAD speech segment (real-time path). Returns text."""
-    segments, _ = stt_model.transcribe(
+def _segment_confidence(segment) -> tuple[str, dict]:
+    """No phrase blacklist: evaluate short replies and identifiers like any other speech."""
+    metrics = {}
+    for name in ("avg_logprob", "no_speech_prob", "compression_ratio"):
+        value = getattr(segment, name, None)
+        if isinstance(value, (int, float)) and math.isfinite(value):
+            metrics[name] = round(float(value), 4)
+    logprob = metrics.get("avg_logprob")
+    no_speech = metrics.get("no_speech_prob")
+    ratio = metrics.get("compression_ratio")
+    # Require two signals before labeling a decoded candidate as non-speech.
+    if no_speech is not None and logprob is not None and no_speech >= STT_HIGH_NO_SPEECH and logprob < -0.5:
+        return "rejected", metrics
+    if logprob is not None and logprob < STT_WEAK_LOGPROB:
+        return "uncertain", metrics
+    if ratio is not None and logprob is not None and ratio > 2.4 and logprob < -0.5:
+        return "uncertain", metrics
+    return "accepted", metrics
+
+
+def transcribe_live(stt_model, audio: np.ndarray, diagnostics: dict | None = None) -> str:
+    """Shared browser/phone STT. Reject clear noise, never forward guessed uncertain text."""
+    details = diagnostics if diagnostics is not None else {}
+    details.clear()
+    samples = np.asarray(audio, dtype=np.float32).reshape(-1)
+    duration_ms = len(samples) / 16
+    details.update(status="empty", audio_ms=round(duration_ms), segments=[])
+
+    def finish(status: str, reason: str, text: str = "") -> str:
+        details.update(status=status, reason=reason, accepted_chars=len(text))
+        # Confidence/numeric diagnostics only: do not add patient text/audio to logs.
+        _stt_log.info("STT decision=%s reason=%s metrics=%s", status, reason, details)
+        return text
+
+    if not len(samples) or not np.isfinite(samples).all():
+        return finish("rejected", "empty_or_invalid_audio")
+    level = rms(samples)
+    details.update(rms=round(level, 6), peak=round(float(np.max(np.abs(samples))), 6),
+                   clipping_fraction=round(float(np.mean(np.abs(samples) >= 0.99)), 4))
+    if duration_ms < STT_MIN_AUDIO_MS:
+        return finish("rejected", "too_short_audio")
+    if level < STT_MIN_RMS:
+        return finish("rejected", "near_silence")
+    segments, info = stt_model.transcribe(
         audio, **STT_LIVE_PARAMS, initial_prompt=STT_INITIAL_PROMPT
     )
-    return " ".join(s.text for s in segments).strip()
+    after_vad = getattr(info, "duration_after_vad", None)
+    if isinstance(after_vad, (int, float)) and math.isfinite(after_vad):
+        details["vad_audio_ms"] = round(after_vad * 1000)
+    texts = []
+    decisions = []
+    for segment in segments:
+        text = segment.text.strip()
+        if not any(char.isalnum() for char in text):
+            continue
+        decision, metrics = _segment_confidence(segment)
+        details["segments"].append({"decision": decision, **metrics})
+        decisions.append(decision)
+        texts.append(text)
+    # Never forward a partial utterance with an uncertain amount/identifier omitted.
+    if "uncertain" in decisions or ("rejected" in decisions and "accepted" in decisions):
+        return finish("uncertain", "uncertain_or_mixed_segments")
+    if "rejected" in decisions:
+        return finish("rejected", "non_speech_confidence")
+    if not texts:
+        return finish("empty", "no_decoded_speech")
+    return finish("accepted", "confidence_pass", " ".join(texts))
 
 
 def transcribe_offline(stt_model, audio: np.ndarray) -> str:
@@ -220,7 +301,8 @@ class VAD:
             self._torch = torch
             # min_silence must match RMS path (default 100ms fires 'end' mid-thought)
             self._silero = utils["VADIterator"](
-                model, sampling_rate=16000, min_silence_duration_ms=self.min_silence_ms
+                model, threshold=self.speech_threshold, sampling_rate=16000,
+                min_silence_duration_ms=self.min_silence_ms
             )
             self._pending = np.array([], dtype=np.float32)
             self._ring = np.array([], dtype=np.float32)

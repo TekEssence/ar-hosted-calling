@@ -21,6 +21,8 @@ export function CallFlow({ projectId, rowNum, accountUid, onActiveChange }: {
   const [phone, setPhone] = useState("");
   const [callId, setCallId] = useState("");
   const [err, setErr] = useState("");
+  const [voiceStatus, setVoiceStatus] = useState("");
+  const [micAutoGain, setMicAutoGain] = useState(true);
   const wsRef = useRef<WebSocket | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const playCtxRef = useRef<AudioContext | null>(null);
@@ -42,6 +44,7 @@ export function CallFlow({ projectId, rowNum, accountUid, onActiveChange }: {
     stopAll();
     setTurns([]);
     setErr("");
+    setVoiceStatus("");
     setActiveState("browser");
 
     // Create the playback AudioContext synchronously in the click gesture so the
@@ -70,7 +73,13 @@ export function CallFlow({ projectId, rowNum, accountUid, onActiveChange }: {
     ws.onopen = async () => {
       try {
         micStream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: micAutoGain, channelCount: { ideal: 1 } },
+        });
+        const settings = micStream.getAudioTracks()[0]?.getSettings();
+        console.debug("Browser microphone processing", {
+          echoCancellation: settings?.echoCancellation, noiseSuppression: settings?.noiseSuppression,
+          autoGainControl: settings?.autoGainControl, sampleRate: settings?.sampleRate,
+          channelCount: settings?.channelCount,
         });
         const ctx = new AudioContext({ sampleRate: MIC_RATE });
         src = ctx.createMediaStreamSource(micStream);
@@ -111,6 +120,8 @@ export function CallFlow({ projectId, rowNum, accountUid, onActiveChange }: {
         const m = JSON.parse(e.data);
         if (m.type === "llm_text" && m.text) setTurns((t) => [...t, { role: "assistant", text: m.text }]);
         else if (m.type === "transcript" && m.text) setTurns((t) => [...t, { role: "user", text: m.text }]);
+        else if (m.type === "status") setVoiceStatus(m.text || "");
+        else if (m.type === "error") setErr(m.text || "Voice error");
       } else {
         const v = new Uint8Array(e.data);
         if (v[0] === 1) { audioQ.push(v.slice(1).buffer.slice(0)); if (!playing) playNext(); }
@@ -186,8 +197,13 @@ export function CallFlow({ projectId, rowNum, accountUid, onActiveChange }: {
             </Button>
           )}
         </div>
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+          <input type="checkbox" checked={micAutoGain} onChange={(e) => setMicAutoGain(e.target.checked)} disabled={!!active} />
+          Browser microphone automatic gain (compare off if background noise is amplified)
+        </label>
         {callId && <div className="text-xs text-muted-foreground font-mono">call_id: {callId}</div>}
         {err && <div className="text-sm text-red-600">{err}</div>}
+        {active === "browser" && voiceStatus && <div className="text-xs text-muted-foreground">{voiceStatus}</div>}
 
         <div className="max-h-96 space-y-2 overflow-y-auto rounded-md border p-3">
           {turns.length === 0 ? (

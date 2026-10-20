@@ -1,0 +1,53 @@
+# Activate with COMPOSE_FILE=docker-compose.yml:docker-compose.hybrid.yml.
+# Only replaceable data lives on the Azure resource disk.
+services:
+  redis:
+    image: ${REDIS_IMAGE:-redis:7-alpine}
+    logging: &bounded_logs
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+  caddy:
+    image: ${CADDY_IMAGE:-caddy:2-alpine}
+    logging: *bounded_logs
+  vllm:
+    environment:
+      # FlashInfer's sampler JIT fails on this T4 (SM75) with the pinned image.
+      # The supported PyTorch sampler keeps the same model/API architecture.
+      - VLLM_USE_FLASHINFER_SAMPLER=0
+    logging: *bounded_logs
+  voice-agent:
+    build:
+      args:
+        BASE_IMAGE: ${PYTORCH_IMAGE:-pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime}
+    logging: *bounded_logs
+  frontend:
+    build:
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:20-alpine}
+    logging: *bounded_logs
+  chatterbox-tts:
+    build:
+      args:
+        BASE_IMAGE: ${PYTORCH_IMAGE:-pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime}
+    volumes:
+      - model-cache:/root/.cache
+    logging: *bounded_logs
+
+volumes:
+  redis-data:
+    driver: local
+    driver_opts: {type: none, o: bind, device: "${PERSISTENT_DATA_DIR:-/var/lib/ar-voice-agent}/redis"}
+  chatterbox-voices:
+    driver: local
+    driver_opts: {type: none, o: bind, device: "${PERSISTENT_DATA_DIR:-/var/lib/ar-voice-agent}/voices"}
+  caddy-data:
+    driver: local
+    driver_opts: {type: none, o: bind, device: "${PERSISTENT_DATA_DIR:-/var/lib/ar-voice-agent}/caddy"}
+  model-cache:
+    driver: local
+    driver_opts: {type: none, o: bind, device: "${TEMP_CACHE_DIR:-/mnt/ar-voice-cache}/models"}
+  piper-models:
+    driver: local
+    driver_opts: {type: none, o: bind, device: "${TEMP_CACHE_DIR:-/mnt/ar-voice-cache}/piper"}

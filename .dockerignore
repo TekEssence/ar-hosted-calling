@@ -1,0 +1,10 @@
+.git
+.env
+.env.*
+.hybrid*
+*.pem
+*.key
+**/__pycache__
+**/node_modules
+**/.next
+chatterbox-venv

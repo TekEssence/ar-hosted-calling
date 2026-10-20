@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1
-FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+ARG BASE_IMAGE=pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+FROM ${BASE_IMAGE}
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends ffmpeg \

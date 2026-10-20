@@ -1,0 +1,14 @@
+[Unit]
+Description=Prepare disposable voice-agent storage after Azure resource disk mounts
+After=cloud-init.service mnt.mount
+Requires=mnt.mount
+Before=docker.service containerd.service
+RequiresMountsFor=/mnt /var/lib/ar-voice-agent
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash /opt/ar-voice-agent/deploy/hybrid-storage-prepare.sh
+
+[Install]
+WantedBy=multi-user.target

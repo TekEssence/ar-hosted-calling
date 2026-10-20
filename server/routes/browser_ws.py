@@ -7,13 +7,13 @@ import numpy as np
 from fastapi import APIRouter, WebSocket
 
 from audio import VAD, rms, transcribe_live
-from prompts import build_greeting, parse_call_result, strip_markers
+from prompts import build_greeting, parse_call_result, strip_markers, conversation_messages, avoid_repeated_question
 
 from ..app_config import get_config as _get_config
 from ..call_flow import _is_end_of_call, _save_review
 from ..config import PIPER_RATE, log
 from ..state import opik_end_trace, opik_span, opik_start_trace, state
-from ..tts import get_tts_fn, tts_stream
+from ..tts import get_tts_fn, tts_stream, prepare_chatterbox_voice
 from .accounts import _effective_prompt, _resolve_account
 
 router = APIRouter()
@@ -83,6 +83,7 @@ async def browser_voice_loop(ws: WebSocket, session_id: str):
     _tts_times = []
     stt_total_ms = 0.0
     stt_count = 0
+    stt_clarification_pending = False
     llm_total_ms = 0.0
     llm_count = 0
     peak_prompt_tokens = 0
@@ -104,7 +105,14 @@ async def browser_voice_loop(ws: WebSocket, session_id: str):
             _stream_tts_reply(ws, text, tts_fn, _tts_times, trace=trace, stop_event=tts_stop_event))
         return tts_task
 
-    # Speak greeting with claim context right away
+    if tts_engine == "chatterbox":
+        await ws.send_json({"type": "status", "text": "Preparing cloned voice; please wait before speaking."})
+        if not await prepare_chatterbox_voice(_cfg["chatterbox_voice"]):
+            await ws.send_json({"type": "error", "text": "Cloned voice preparation failed. Please retry."})
+            await ws.close()
+            return
+        await ws.send_json({"type": "status", "text": "Voice ready."})
+    # Speak the greeting only once voice preparation has completed.
     greeting = build_greeting(account)
     conversation.append({"role": "assistant", "content": greeting})
     await ws.send_json({"type": "llm_text", "text": greeting})
@@ -221,15 +229,17 @@ async def browser_voice_loop(ws: WebSocket, session_id: str):
                                        "account_uid": account_uid, "state": "browser"})
 
             _stt_t0 = time.time()
+            stt_diagnostics = {}
             async with state["stt_lock"]:
                 loop = asyncio.get_running_loop()
                 text = await loop.run_in_executor(
-                    None, lambda: transcribe_live(state["stt_model"], segment))
+                    None, lambda: transcribe_live(state["stt_model"], segment, stt_diagnostics))
                 stt_latency_ms = (time.time() - _stt_t0) * 1000
                 stt_total_ms += stt_latency_ms
                 stt_count += 1
+            log.info("[%s] STT diagnostics=%s", session_id, stt_diagnostics)
             opik_span(_trace, "browser.stt", "general",
-                      {"audio_sec": round(len(segment) / 16000, 2)}, {"text": text},
+                      {"audio_sec": round(len(segment) / 16000, 2)}, {"text": text, "diagnostics": stt_diagnostics},
                       _stt_t0, time.time())
 
             # Only interrupt the bot for a REAL utterance. Transcribing before
@@ -238,9 +248,20 @@ async def browser_voice_loop(ws: WebSocket, session_id: str):
             # mid-stream — previously the flush cancelled TTS up front and then
             # dropped the segment anyway, so a reply like a two-part question
             # would be reduced to its first sentence.
-            if len(text) < 3:
-                opik_end_trace(_trace, output={"text": text, "status": "empty"})
+            if not text:
+                opik_end_trace(_trace, output={"status": stt_diagnostics.get("status", "empty"), "diagnostics": stt_diagnostics})
+                if stt_diagnostics.get("status") == "uncertain" and not stt_clarification_pending:
+                    stt_clarification_pending = True
+                    if tts_task is greeting_task:
+                        await tts_task
+                    else:
+                        await cancel_tts()
+                    clarification = "Could you repeat that last part?"
+                    conversation.append({"role": "assistant", "content": clarification})
+                    await ws.send_json({"type": "llm_text", "text": clarification})
+                    tts_task = speak(clarification)
                 continue
+            stt_clarification_pending = False
             if tts_task is greeting_task:
                 try:
                     await tts_task
@@ -261,7 +282,7 @@ async def browser_voice_loop(ws: WebSocket, session_id: str):
 
             conversation.append({"role": "user", "content": f"[INSURANCE REP] {text}"})
             await ws.send_json({"type": "transcript", "text": text})
-            conv = conversation if len(conversation) <= 15 else [conversation[0]] + conversation[-14:]
+            conv = conversation_messages(conversation)
             _llm_t0 = time.time()
             bot_text = ""
             usage = None
@@ -281,6 +302,8 @@ async def browser_voice_loop(ws: WebSocket, session_id: str):
             except Exception as _e:
                 opik_end_trace(_trace, error=str(_e))
                 raise
+            bot_text = await avoid_repeated_question(state["llm_client"], state["llm_model"], conv,
+                                                     bot_text, conversation)
             llm_total_ms += (time.time() - _llm_t0) * 1000
             llm_count += 1
             if usage is not None:

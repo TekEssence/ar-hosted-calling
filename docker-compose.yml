@@ -1,10 +1,17 @@
 services:
   # ── LLM serving (GPU, continuous batching for concurrent calls) ──────
   vllm:
-    image: vllm/vllm-openai:latest
+    # Set VLLM_IMAGE to a tested tag/digest before deployment; no version guessing.
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:latest}
     container_name: vllm
     restart: unless-stopped
     runtime: nvidia
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 10m
+      retries: 10
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - HF_TOKEN=${HF_TOKEN:-}
@@ -23,7 +30,7 @@ services:
       # leaving Whisper + Chatterbox room on the shared 16GB T4. vLLM's
       # default let the cache grow to 3.66GiB+ and the resulting total
       # (15.5GB+) left whisper no memory and OOM'd mid-call.
-      - --kv-cache-memory=2147483648
+      - --kv-cache-memory-bytes=2147483648
       - --quantization=awq
       - --dtype=auto
       - --port=8001
@@ -46,6 +53,11 @@ services:
     container_name: redis
     restart: unless-stopped
     command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     volumes:
       - redis-data:/data
 
@@ -74,7 +86,7 @@ services:
       - chatterbox-voices:/models/chatterbox/voices
       - ./:/app
       - /var/run/docker.sock:/var/run/docker.sock
-      - /home/azureuser/ar-voice-agent:/project
+      - ./:/project
     profiles: [dev]
     deploy:
       resources:
@@ -105,14 +117,22 @@ services:
     ports:
       - "8080:8080"
     depends_on:
-      - vllm
-      - redis
+      vllm:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/ready', timeout=10)"]
+      interval: 30s
+      timeout: 15s
+      start_period: 10m
+      retries: 5
     volumes:
       - model-cache:/root/.cache
       - piper-models:/models/piper
       - chatterbox-voices:/models/chatterbox/voices
       - /var/run/docker.sock:/var/run/docker.sock
-      - /home/azureuser/ar-voice-agent:/project
+      - ./:/project
     profiles: [prod]
     deploy:
       resources:
@@ -162,6 +182,12 @@ services:
         NEXT_PUBLIC_OPIK_HOST: https://optik.${PUBLIC_DOMAIN:-call.ar-voice.com}
     container_name: frontend
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000/', r => {r.resume(); process.exit(r.statusCode === 200 ? 0 : 1)}).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 5
     environment:
       - NEXT_PUBLIC_API_BASE=${PUBLIC_SCHEME:-https}://${PUBLIC_DOMAIN:-call.ar-voice.com}
       - NEXT_PUBLIC_OPIK_HOST=https://optik.${PUBLIC_DOMAIN:-call.ar-voice.com}

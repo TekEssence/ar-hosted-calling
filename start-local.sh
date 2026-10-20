@@ -6,7 +6,9 @@ cd "$(dirname "$0")"
 
 echo "==> Creating ar-agent Ollama model (llama3.1:8b, num_ctx 8192) if missing..."
 if ! ollama list 2>/dev/null | grep -q '^ar-agent'; then
-  printf 'FROM llama3.1:8b\nPARAMETER num_ctx 8192\n' | ollama create ar-agent -
+  printf 'FROM llama3.1:8b
+PARAMETER num_ctx 8192
+' | ollama create ar-agent -f -
 fi
 
 # The tracked .env carries prod LLM_MODEL (vLLM AWQ name); force the local

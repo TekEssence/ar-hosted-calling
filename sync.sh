@@ -14,9 +14,9 @@
 # Usage: ./sync.sh [user@host]   (defaults to azureuser@4.247.26.45)
 set -euo pipefail
 
-HOST="${1:-azureuser@4.247.26.45}"
-SSH_KEY="${SSH_KEY:-$HOME/.ssh/llama-si_key.pem}"
-REMOTE_DIR="/home/azureuser/ar-voice-agent"
+HOST="${1:-azureuser@85.211.177.112}"
+SSH_KEY="${SSH_KEY:?Set SSH_KEY to your private key outside the repository}"
+REMOTE_DIR="${REMOTE_DIR:-/opt/ar-voice-agent/deploy}"
 LOCAL_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 GIT_COMMIT="$(git -C "$LOCAL_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
@@ -37,7 +37,8 @@ echo "==> Syncing commit ${GIT_COMMIT:0:12}${DIRTY} to $HOST..."
 # what should be in there and why (in particular OPIK_BASE_URL's value is
 # non-obvious — it's explained there).
 rsync -avz -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no" \
-  --exclude .git --exclude infra --exclude __pycache__ --exclude .env \
+  --exclude .git --exclude infra --exclude __pycache__ --exclude .env --exclude '.env.*' \
+  --exclude '*.pem' --exclude '*.key' \
   --exclude 'frontend/node_modules' --exclude 'frontend/.next' \
   --exclude chatterbox-venv \
   "$LOCAL_DIR/" "$HOST:$REMOTE_DIR/"

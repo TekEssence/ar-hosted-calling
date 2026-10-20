@@ -23,6 +23,30 @@ async def health():
     return {"status": "ok", "whisper": WHISPER_MODEL_SIZE, "llm": state["llm_model"]}
 
 
+@router.get("/ready")
+async def ready():
+    """Dependency readiness; /health remains the lightweight liveness endpoint."""
+    checks = {"whisper": state.get("stt_model") is not None, "redis": False, "llm": False}
+
+    async def check_redis():
+        try:
+            checks["redis"] = bool(await asyncio.wait_for(state["redis"].ping(), timeout=5))
+        except Exception:
+            pass
+
+    async def check_llm():
+        try:
+            models = await asyncio.wait_for(state["llm_client"].models.list(), timeout=5)
+            checks["llm"] = any(model.id == state.get("llm_model") for model in models.data)
+        except Exception:
+            pass
+
+    await asyncio.gather(check_redis(), check_llm())
+    available = all(checks.values())
+    return JSONResponse({"status": "ready" if available else "not_ready", "checks": checks},
+                        status_code=200 if available else 503)
+
+
 @router.get("/api/current-llm")
 async def current_llm():
     return {

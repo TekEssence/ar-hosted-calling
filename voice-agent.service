@@ -1,23 +1,24 @@
 [Unit]
 Description=AR Voice Agent Server
-After=docker.service network-online.target
-Wants=network-online.target
+After=cloud-final.service docker.service network-online.target hybrid-storage.service
+Wants=network-online.target cloud-final.service
+Requires=docker.service hybrid-storage.service
+StartLimitIntervalSec=0
 
-# NOTE: this VM (llama-si / call3.ar-voice.com) starts the stack via the
-# azureuser @reboot cron entry `start.sh`, not this unit. The main compose
-# services also use restart=unless-stopped so docker restores them at boot;
-# start.sh additionally brings up the Opik stack (restart: no) and re-joins
-# its frontend to the app network. This file is kept as a reference/alternative:
-#   sudo cp voice-agent.service /etc/systemd/system/ && sudo systemctl enable --now voice-agent
+# Activated by voice-agent-recovery.timer after Azure/cloud-init preparation.
+# Do not enable under multi-user.target: cloud-final starts after that target.
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-WorkingDirectory=/home/azureuser/ar-voice-agent
-ExecStart=/home/azureuser/ar-voice-agent/start.sh
-ExecStop=/usr/bin/docker compose --project-directory /home/azureuser/ar-voice-agent down
+WorkingDirectory=/opt/ar-voice-agent/deploy
+ExecStart=/bin/bash /opt/ar-voice-agent/deploy/start.sh
+# Preserve containers and volumes across VM shutdown.
+ExecStop=/usr/bin/docker compose --project-name ar-voice-agent --profile prod --profile tls stop --timeout 60
+Environment=COMPOSE_PROJECT_NAME=ar-voice-agent
+TimeoutStartSec=0
+TimeoutStopSec=120
 Restart=on-failure
-RestartSec=10
+RestartSec=30
+EnvironmentFile=-/opt/ar-voice-agent/deploy/.hybrid.env
+EnvironmentFile=-/opt/ar-voice-agent/deploy/.hybrid-images.env
 User=azureuser
-
-[Install]
-WantedBy=multi-user.target

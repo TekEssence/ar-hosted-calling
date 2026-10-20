@@ -63,7 +63,7 @@ _DIGIT_WORDS = {
 def _format_digits(match) -> str:
     """Expand a digit run into explicit spoken names for 100% precision."""
     s = match.group(0)
-    return " ".join(_DIGIT_WORDS.get(c, c) for c in s)
+    return ", ".join(" ".join(_DIGIT_WORDS.get(c, c) for c in s[i:i + 4]) for i in range(0, len(s), 4))
 
 
 def _say_two(n: int) -> str:
@@ -114,7 +114,7 @@ def _format_money(match) -> str:
     dollar(s) and cents — '$168.50' -> 'one hundred sixty eight dollars and
     fifty cents' instead of reading the raw digits with no currency unit."""
     dollars = int(match.group(1).replace(",", ""))
-    cents = int(match.group(2).lstrip(".")) if match.group(2) else 0
+    cents = int(match.group(2).lstrip(".").ljust(2, "0")) if match.group(2) else 0
     if dollars == 0 and cents == 0:
         return "zero dollars"
     words = _number_to_words(dollars) if dollars else "zero"
@@ -190,6 +190,10 @@ def tts_text(text: str) -> str:
     text = _SPELLED_DIGITS_RE.sub("", text)
     text = _SPELLED_LETTERS_RE.sub(_group_spelled_letters, text)
     text = _NUM_ID_RE.sub(_format_digits, text)
+    # Expand common address labels only at whole-token boundaries.
+    for abbreviation, spoken in (("STE", "suite"), ("APT", "apartment"), ("RD", "road"),
+                                  ("BLVD", "boulevard"), ("AVE", "avenue")):
+        text = re.sub(r"\b" + abbreviation + r"\b\.?", spoken, text, flags=re.IGNORECASE)
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
@@ -212,12 +216,18 @@ def _split_plain_chunks(text: str, max_chars: int = 70) -> list[str]:
             if buf and len(buf) + len(p) + 1 > max_chars:
                 pieces.append(buf)
                 buf = ""
-                while len(p) > max_chars:
-                    cut = p.rfind(" ", 0, max_chars)
-                    if cut < max_chars // 2:
-                        cut = max_chars
-                    pieces.append(p[:cut])
-                    p = p[cut:].lstrip()
+            while len(p) > max_chars:
+                if buf:
+                    pieces.append(buf)
+                    buf = ""
+                cut = p.rfind(" ", 0, max_chars + 1)
+                # Never split a single identifier/name token in the middle.
+                if cut <= 0:
+                    cut = p.find(" ", max_chars)
+                    if cut < 0:
+                        break
+                pieces.append(p[:cut])
+                p = p[cut:].lstrip()
             buf = f"{buf} {p}".strip()
         if buf:
             pieces.append(buf)

@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1
-FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+ARG BASE_IMAGE=pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+FROM ${BASE_IMAGE}
 
 # BuildKit cache mounts: package downloads persist under the docker data-root,
 # so rebuilds (after code changes) only hit the network for NEW packages.

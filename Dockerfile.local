@@ -1,22 +1,24 @@
-# Local Apple-Silicon build: no CUDA, CPU-only torch/whisper/kokoro.
-# The LLM runs on the host via Ollama (http://host.docker.internal:11434/v1).
+# Local CPU build: no CUDA, runs on host Ollama or CPU-only mode.
 # syntax=docker/dockerfile:1
 FROM python:3.11-slim
 
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends \
-    build-essential curl ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
+# Skip apt-get to avoid Debian mirror issues; deps installed via pip
+# Many Python packages (piper-tts, kokoro, faster-whisper) have pre-built wheels
+# that work on Windows/Linux without system dependencies for basic CPU use.
 
 COPY requirements.txt .
-RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
-    pip install -r requirements.txt
 
+# Use pip cache mount for speed
+RUN --mount=type=cache,target=/root/.local/pip/cache \
+    --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-cache-dir -r requirements.txt
+
+# Create model directories (populated at runtime or via start-local.sh)
 RUN mkdir -p /models/piper /models/chatterbox/voices
 
 EXPOSE 8080
 
 # Dev: source is volume-mounted, hot reload via uvicorn --reload
+# LLM runs on host via Ollama: http://host.docker.internal:11434/v1
+# Or set VLLM_BASE_URL to point to a remote vLLM container / Azure VM
 CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8080", "--reload", "--reload-dir", "/app"]

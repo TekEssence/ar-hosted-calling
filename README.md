@@ -2,7 +2,28 @@
 
 Full port of the Cloudflare Workers stack to self-hosted Azure GPU VM.
 
+## Repository and daily workflow
+
+Use the standalone `ar-hosted-calling` repository, not the old nested copies in
+`Calling Bot`. See [REPOSITORY.md](REPOSITORY.md) for the cleanup record, branch
+workflow, secret-handling requirements and the supported VM deployment path.
+
+## VM startup and recovery
+
+Read [OPERATIONS.md](OPERATIONS.md) before deploying or changing VM storage.
+Azure `/mnt` is temporary storage: legacy bootstrap/fix scripts that put Docker
+there without durable data mounts are not safe for application data. The hybrid
+development setup keeps Redis, voices and certificates permanently while rebuilding
+disposable images/models automatically after temporary-disk loss.
+
 ## Feature Parity with Cloudflare Version
+
+See [PROMPT_BEHAVIOR.md](PROMPT_BEHAVIOR.md) for current spreadsheet/objective and
+supplementary-instruction handling across browser tests, chats and phone calls.
+See [STT_SAFEGUARDS.md](STT_SAFEGUARDS.md) for live transcription confidence
+diagnostics, noise safeguards and browser microphone gain comparison testing.
+See [VOICE_CLARITY.md](VOICE_CLARITY.md) for cloned-voice preparation/cache,
+number/address chunking and conversation-memory safeguards.
 
 | Feature | Cloudflare (src/) | Azure (deploy/) |
 |---|---|---|
@@ -45,6 +66,10 @@ prompts.py       System prompts + marker parsing (from do.ts)
 ```
 
 ## Quick Start
+
+The infrastructure commands below are for a **new environment**, not routine
+updates to the existing hybrid VM. For that VM, use `sync.sh` as described in
+[REPOSITORY.md](REPOSITORY.md) and read [OPERATIONS.md](OPERATIONS.md) first.
 
 ```bash
 # 1. Infra (Pulumi)

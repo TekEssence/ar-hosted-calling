@@ -851,6 +851,21 @@ async def _chatterbox_synth_segments(segments, stop_event: "asyncio.Event | None
             yield _silence_bytes(silence_ms)
 
 
+async def prepare_chatterbox_voice(voice_name: str = "") -> bool:
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.post(f"{CHATTERBOX_SERVICE_URL}/prepare", json={
+                "text": "", "voice_name": voice_name, "exaggeration": CHATTERBOX_EXAGGERATION,
+                "cfg_weight": CHATTERBOX_CFG_WEIGHT})
+            response.raise_for_status()
+            log.info("Chatterbox preparation: %s", response.json())
+            return bool(response.json().get("ok"))
+    except Exception as error:
+        log.warning("Chatterbox preparation failed: %s", error)
+        return False
+
+
 async def chatterbox_stream(text: str, stop_event: "asyncio.Event | None" = None,
                             sent_log: list | None = None):
     cfg = await _get_config()

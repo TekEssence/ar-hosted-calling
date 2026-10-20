@@ -15,9 +15,18 @@
 # the build is stamped "unknown" rather than silently claiming a commit it
 # can't verify. Check GET /api/config (or Settings page) after any deploy to
 # confirm the running build's commit/time match what you expect.
-set -e
-cd ~/ar-voice-agent
+set -euo pipefail
+cd "${APP_DIR:-$(cd "$(dirname "$0")" && pwd)}"
+export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-ar-voice-agent}"
+if [[ -f .hybrid.env ]]; then
+  set -a
+  source ./.hybrid.env
+  [[ ! -f .hybrid-images.env ]] || source ./.hybrid-images.env
+  set +a
+  export COMPOSE_FILE=docker-compose.yml:docker-compose.hybrid.yml
+fi
 
 GIT_COMMIT="${GIT_COMMIT:-unknown}" BUILD_TIME="${BUILD_TIME:-unknown}" \
   docker compose --profile prod --profile tls up -d --build
 echo "Built commit=${GIT_COMMIT:-unknown} at=${BUILD_TIME:-unknown}"
+bash ./verify_services.sh

@@ -1,0 +1,11 @@
+[Unit]
+Description=Retry voice-agent recovery after boot or a missed startup
+
+[Timer]
+OnBootSec=90s
+OnCalendar=*-*-* *:*:00
+AccuracySec=5s
+Unit=voice-agent.service
+
+[Install]
+WantedBy=timers.target

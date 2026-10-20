@@ -26,6 +26,9 @@
 	handle /health {
 		reverse_proxy voice-agent:8080
 	}
+	handle /ready {
+		reverse_proxy voice-agent:8080
+	}
 	handle /export.csv {
 		reverse_proxy voice-agent:8080
 	}

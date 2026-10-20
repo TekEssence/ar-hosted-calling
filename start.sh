@@ -1,12 +1,18 @@
 #!/bin/bash
 # Start the AR voice agent stack instantly (no rebuild — uses existing images).
 # Use bootstrap-new-vm.sh on a fresh VM; run rebuild.sh after changing code.
-set -e
-cd ~/ar-voice-agent
+set -euo pipefail
+cd "${APP_DIR:-$(cd "$(dirname "$0")" && pwd)}"
+export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-ar-voice-agent}"
+if [[ -f .hybrid.env ]]; then
+  exec /bin/bash ./recover-hybrid.sh
+fi
 
 # prod+tls brings up voice-agent, vllm, redis, frontend and caddy. No --build:
 # instant start from cached images.
-docker compose --profile prod --profile tls up -d
+docker info >/dev/null
+# Boot must never silently download or rebuild the GPU stack.
+docker compose --profile prod --profile tls up -d --no-build --pull never
 
 # Opik runs as its own compose at /opt/opik (the built-in compose `opik`
 # profile is not the real stack). Start it too if present.
@@ -20,7 +26,7 @@ if [ -d /opt/opik/deployment/docker-compose ]; then
   ) && sudo docker network connect ar-voice-agent_default opik-frontend-1 2>/dev/null || true
 fi
 
-sleep 8
+bash ./verify_services.sh
 echo "----------------------------------------"
 echo "  API health : curl https://\$(grep ^PUBLIC_DOMAIN .env | cut -d= -f2)/health"
 echo "  UI         : https://\$(grep ^PUBLIC_DOMAIN .env | cut -d= -f2)"

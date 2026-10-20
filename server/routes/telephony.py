@@ -15,7 +15,7 @@ from ..config import (
     TWILIO_FROM_NUMBER, WHISPER_MODEL_SIZE,
 )
 from ..state import state
-from ..tts import get_tts_fn
+from ..tts import get_tts_fn, prepare_chatterbox_voice
 from .accounts import _resolve_account
 
 router = APIRouter()
@@ -52,6 +52,9 @@ async def make_call(request: Request):
 
     payer = data.get("payer", "unknown")
     claim_id = data.get("claim_id", "unknown")
+    cfg = await _get_config()
+    if cfg["tts_engine"] == "chatterbox" and not await prepare_chatterbox_voice(cfg["chatterbox_voice"]):
+        return JSONResponse({"error": "Cloned voice preparation failed; no call was placed."}, 503)
     call_id = f"call-{uuid.uuid4().hex[:12]}"
 
     # Pre-create the call record keyed by a stable call_id (ported from /voice handler)
@@ -113,6 +116,11 @@ async def make_call_enriched(request: Request):
 
     if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER]):
         return JSONResponse({"ok": True, "call_id": call_id, "callSid": call_id, "warning": "Twilio not configured; mock mode active"})
+
+    cfg = await _get_config()
+    if cfg["tts_engine"] == "chatterbox" and not await prepare_chatterbox_voice(cfg["chatterbox_voice"]):
+        await r.hset(f"call:{call_id}", mapping={"status": "failed", "last_error": "Cloned voice preparation failed"})
+        return JSONResponse({"error": "Cloned voice preparation failed; no call was placed."}, 503)
 
     from twilio.rest import Client as TwilioClient
     from twilio.base.exceptions import TwilioRestException

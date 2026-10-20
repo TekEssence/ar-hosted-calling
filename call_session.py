@@ -23,7 +23,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from audio import VAD, twilio_to_whisper, piper_to_twilio, rms, transcribe_live, transcribe_offline
 from prompts import (
-    build_call_prompt, build_greeting, parse_markers,
+    build_call_prompt, compose_call_prompt, build_greeting, parse_markers, conversation_messages, avoid_repeated_question,
     parse_call_result, load_payer, load_denial_codes, strip_markers,
 )
 
@@ -113,7 +113,17 @@ class CallSession:
         # in-flight synth call finishes on a long spelled run.
         self.tts_stop_event: asyncio.Event | None = None
         self.watchdog_task: asyncio.Task | None = None
+        # Bound queued utterances rather than accumulating stale audio during
+        # inference. Only one worker may mutate conversation/turn state.
+        self.segment_queue: asyncio.Queue = asyncio.Queue(maxsize=4)
+        self.turn_task: asyncio.Task | None = None
+        self.turn_lock = asyncio.Lock()
         self.last_tts_duration: float = 0.0
+        self.pending_marks: set[str] = set()
+        self.playback_done = asyncio.Event()
+        self.playback_done.set()
+        self._tts_synthesizing = False
+        self._playback_sequence = 0
 
         # TTR timing accumulators (ms)
         self.stt_total_ms = 0.0
@@ -148,6 +158,7 @@ class CallSession:
         self.system_prompt = await self._resolve_prompt(self.account)
         self.conversation = [{"role": "system", "content": self.system_prompt}]
         self.watchdog_task = asyncio.create_task(self._silence_watchdog())
+        self.turn_task = asyncio.create_task(self._process_segments())
 
         try:
             async for message in self.ws.iter_text():
@@ -157,6 +168,8 @@ class CallSession:
                     await self._on_start(data)
                 elif event == "media":
                     await self._on_media(data)
+                elif event == "mark":
+                    self._on_mark(data)
                 elif event == "stop":
                     await self._finalize("disconnected")
                     break
@@ -173,9 +186,28 @@ class CallSession:
                 log.error("[%s] Session error: %s", self.call_sid, e)
                 await self._finalize("failed", error=str(e))
         finally:
-            if self.watchdog_task:
-                self.watchdog_task.cancel()
+            tasks = [task for task in (self.watchdog_task, self.turn_task) if task]
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
             await self._cancel_tts()
+
+    async def _process_segments(self):
+        """Serialize inference without blocking incoming media or barge-in."""
+        try:
+            while not self.is_call_ended:
+                segment = await self.segment_queue.get()
+                try:
+                    async with self.turn_lock:
+                        if not self.is_call_ended:
+                            await self._process_segment(segment)
+                finally:
+                    self.segment_queue.task_done()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("[%s] Speech worker failed", self.call_sid)
+            await self._finalize("failed", error="Speech processing failed")
 
     # ── Twilio events ────────────────────────────────────────────────────
     async def _on_start(self, data: dict):
@@ -189,6 +221,7 @@ class CallSession:
                 if payer_name:
                     self.payer_data = load_payer(payer_name)
                 self.system_prompt = await self._resolve_prompt(self.account)
+                self.conversation[0] = {"role": "system", "content": self.system_prompt}
 
         log.info("[%s] Stream started: %s | state=%s", self.call_sid, self.stream_sid, self.state)
         await self.redis.hset(f"call:{self.call_sid}", mapping={"status": "in-progress"})
@@ -204,7 +237,6 @@ class CallSession:
         self.full_audio.extend(payload)  # raw μ-law (8kHz) for offline re-transcription
         audio = twilio_to_whisper(payload)
         now = time.time()
-        self.last_activity = now
 
         # Barge-in: user spoke while bot is talking. Checked over a short
         # rolling window rather than this one 20ms frame, so a single quiet
@@ -216,6 +248,11 @@ class CallSession:
                 await self._barge_in()
 
         segment = self.vad.add(audio, now)
+        # Twilio streams packets during silence too. Track detected speech,
+        # not transport traffic; long utterances also count before endpointing.
+        if (self.vad.speech_start is not None
+                or self.vad._speech_start_s is not None or segment is not None):
+            self.last_activity = now
         if segment is None:
             return
 
@@ -224,6 +261,18 @@ class CallSession:
             # finish rather than acting on speech captured underneath it.
             return
 
+        await self._cancel_tts()
+
+        try:
+            self.segment_queue.put_nowait(segment)
+        except asyncio.QueueFull:
+            log.warning("[%s] Speech queue capacity exceeded", self.call_sid)
+            await self._finalize("failed", error="Speech processing backlog exceeded")
+
+    async def _process_segment(self, segment: np.ndarray):
+        if self.is_call_ended:
+            return
+        # The preceding turn may have started TTS after this segment queued.
         await self._cancel_tts()
 
         # Start the turn trace (thread = call) before STT
@@ -245,9 +294,17 @@ class CallSession:
         _opik_span(self._current_trace, "twilio.stt", "general",
                    {"audio_sec": round(len(segment) / 16000, 2)}, {"text": text},
                    stt_t0, time.time())
-        if not text or len(text.strip()) < 3:
-            self._end_trace(output={"text": text, "status": "empty"})
+        if not text:
+            self._end_trace(output={"status": getattr(self, "last_stt_diagnostics", {}).get("status", "empty")})
+            if (getattr(self, "last_stt_diagnostics", {}).get("status") == "uncertain"
+                    and not getattr(self, "stt_clarification_pending", False)):
+                self.stt_clarification_pending = True
+                clarification = "Could you repeat that last part?"
+                self.conversation.append({"role": "assistant", "content": clarification})
+                await self._live_append({"role": "assistant", "text": clarification})
+                await self._speak(clarification)
             return
+        self.stt_clarification_pending = False
 
         log.info("[%s] Heard: %s", self.call_sid, text)
         await self._live_append({"role": "user", "text": text})
@@ -271,9 +328,12 @@ class CallSession:
         async with self.stt_lock:
             loop = asyncio.get_running_loop()
             t0 = time.time()
+            diagnostics = {}
             text = await loop.run_in_executor(
-                None, lambda: transcribe_live(self.stt_model, audio)
+                None, lambda: transcribe_live(self.stt_model, audio, diagnostics)
             )
+            self.last_stt_diagnostics = diagnostics
+            log.info("[%s] STT diagnostics=%s", self.call_sid, diagnostics)
             self.stt_total_ms += (time.time() - t0) * 1000
             self.stt_count += 1
             return text
@@ -300,7 +360,7 @@ class CallSession:
         if self._detect_call_end(user_text):
             log.info("[%s] End-of-call detected from user", self.call_sid)
             await self._speak("Thank you. Have a great day!")
-            await asyncio.sleep(1.5)
+            await self._wait_for_playback()
             await self._finalize("completed")
             return
 
@@ -312,9 +372,10 @@ class CallSession:
 
         try:
             llm_t0 = time.time()
+            messages = conversation_messages(self.conversation)
             stream = await self.llm_client.chat.completions.create(
                 model=self.llm_model,
-                messages=self.conversation,
+                messages=messages,
                 max_tokens=200,
                 temperature=0,
                 stream=True,
@@ -342,7 +403,7 @@ class CallSession:
                         if "?" in _pre:
                             _pre = _pre.split("?")[0] + "?"
                             asked_question = True
-                        await self._speak(_pre)
+                        # Speak once after validation; avoid restarting prior sentence audio.
                     sentence_buffer = ""
                     if asked_question:
                         break
@@ -357,7 +418,7 @@ class CallSession:
                         if "?" in _pre:
                             _pre = _pre.split("?")[0] + "?"
                             asked_question = True
-                        await self._speak(_pre)
+                        # Buffer until the first question is complete and checked.
                     sentence_buffer = ""
                     if asked_question:
                         break
@@ -369,13 +430,19 @@ class CallSession:
                     if "?" in _pre:
                         _pre = _pre.split("?")[0] + "?"
                         asked_question = True
-                    await self._speak(_pre)
+                    # Buffer the tail; no partial-number or repeated-prefix playback.
 
             # ONE question per turn: stop after the first question so the agent
             # never bundles questions or finalizes before the rep answers.
             if asked_question:
                 bot_text = strip_markers(bot_text.split("?")[0] + "?")
                 seen_call_result = False
+
+            bot_text = await avoid_repeated_question(self.llm_client, self.llm_model, messages,
+                                                     bot_text, self.conversation)
+            spoken = strip_markers(bot_text)
+            if spoken:
+                await self._speak(spoken)
 
             self.llm_total_ms += (time.time() - llm_t0) * 1000
             self.llm_count += 1
@@ -405,8 +472,7 @@ class CallSession:
             # ── Waiting on hold ──────────────────────────────────────────
             if parsed["waiting"]:
                 log.info("[%s] Waiting on hold", self.call_sid)
-                if self.hold_start is None:
-                    self.hold_start = time.time()
+            self._update_hold_state(parsed["waiting"])
 
             # ── End call with [CALL_RESULT] JSON ─────────────────────────
             # The marker itself is the end-of-call signal — finalize even if
@@ -431,17 +497,7 @@ class CallSession:
                 # Say a farewell so the call doesn't end in silence
                 log.info("[%s] Speaking farewell (ended=%s sid=%s)", self.call_sid, self.is_call_ended, self.stream_sid)
                 await self._speak("Okay, thank you. Goodbye!")
-                if self.tts_task:
-                    try:
-                        await self.tts_task
-                        log.info("[%s] Farewell TTS completed", self.call_sid)
-                    except asyncio.CancelledError:
-                        log.warning("[%s] Farewell TTS cancelled", self.call_sid)
-                    except Exception as e:
-                        log.warning("[%s] Farewell TTS error: %s", self.call_sid, e)
-                # Give Twilio time to flush/play the farewell audio before closing.
-                # Wait the full audio duration + a margin for Twilio's playback buffer.
-                await asyncio.sleep(max(1.5, self.last_tts_duration + 1.0))
+                await self._wait_for_playback()
                 self._end_trace(output={"call_result": call_result or {}, "status": "completed"})
                 await self._finalize("completed", result=call_result)
                 return
@@ -482,21 +538,15 @@ class CallSession:
             self.state = "APPROVED_HANDLE"
             log.info("[%s] state: → APPROVED_HANDLE", self.call_sid)
 
-    # ── Custom LLM context (per-account override) ──────────────────────
+    # ── Shared LLM context composition ────────────────────────────────
     async def _resolve_prompt(self, account: dict | None) -> str:
         if not account:
-            return build_call_prompt("GREETING", None, None, None)
+            return compose_call_prompt(None)
         uid = account.get("UID", "")
         custom = None
         if uid:
             custom = await self.redis.get(f"account:{uid}:llm_context")
-        notes = account.get("Notes", "")
-        if custom:
-            prompt = custom
-            if notes:
-                prompt += f"\n\n[PRIOR CALL NOTES]\n{notes}"
-            return prompt
-        return build_call_prompt("GREETING", None, None, account)
+        return compose_call_prompt(account, custom, self.payer_data)
 
     # ── Live transcript (for UI polling during a call) ──────────────────
     async def _live_append(self, turn: dict):
@@ -562,6 +612,27 @@ class CallSession:
         self.last_verify_phrase = None
 
     # ── TTS → Twilio ────────────────────────────────────────────────────
+    async def _wait_for_playback(self):
+        if self.tts_task:
+            await self.tts_task
+        try:
+            await asyncio.wait_for(
+                self.playback_done.wait(), timeout=max(5.0, self.last_tts_duration + 5.0)
+            )
+        except asyncio.TimeoutError:
+            log.warning("[%s] Playback acknowledgement timed out", self.call_sid)
+
+    def _on_mark(self, data: dict):
+        if data.get("streamSid") != self.stream_sid:
+            return
+        name = data.get("mark", {}).get("name")
+        if name not in self.pending_marks:
+            return  # Includes acknowledgements for audio already cleared.
+        self.pending_marks.remove(name)
+        self.is_bot_speaking = self._tts_synthesizing or bool(self.pending_marks)
+        if not self.pending_marks:
+            self.playback_done.set()
+
     async def _speak(self, text: str, interruptible: bool = True):
         if not text or not text.strip():
             return
@@ -579,6 +650,7 @@ class CallSession:
         self.tts_task = asyncio.create_task(self._stream_tts(text, self.tts_stop_event))
 
     async def _stream_tts(self, text: str, stop_event: asyncio.Event):
+        self._tts_synthesizing = True
         try:
             log.info("[%s] TTS start: %r", self.call_sid, text[:40])
             tts_t0 = time.time()
@@ -626,16 +698,27 @@ class CallSession:
                 sent_samples += len(frame)
             # μ-law is 8kHz: 8000 samples = 1 second of audio
             self.last_tts_duration = sent_samples / 8000.0
-            self.is_bot_speaking = False
+            if sent_samples:
+                self._playback_sequence += 1
+                name = f"playback-{self._playback_sequence}"
+                self.pending_marks.add(name)
+                self.playback_done.clear()
+                await self.ws.send_text(json.dumps({
+                    "event": "mark", "streamSid": self.stream_sid,
+                    "mark": {"name": name},
+                }))
             log.info("[%s] TTS done (%.2fs audio)", self.call_sid, self.last_tts_duration)
         except asyncio.CancelledError:
             log.warning("[%s] TTS cancelled", self.call_sid)
             pass
         except Exception as e:
             log.warning("[%s] TTS error: %s", self.call_sid, e)
-            self.is_bot_speaking = False
+        finally:
+            self._tts_synthesizing = False
+            self.is_bot_speaking = bool(self.pending_marks)
 
     async def _cancel_tts(self):
+        had_playback = self.is_bot_speaking or bool(self.pending_marks)
         # Set first and synchronously — the generator checks this at every
         # segment/character boundary, so it stops queuing further audio
         # immediately, without waiting for task.cancel() to actually land
@@ -649,17 +732,20 @@ class CallSession:
             except asyncio.CancelledError:
                 pass
         self.tts_task = None
+        had_playback = had_playback or self.is_bot_speaking or bool(self.pending_marks)
+        self.pending_marks.clear()
+        self.playback_done.set()
         self.is_bot_speaking = False
-
-    async def _barge_in(self):
-        await self._cancel_tts()
-        if self.stream_sid:
+        if had_playback and self.stream_sid:
             try:
                 await self.ws.send_text(json.dumps({
                     "event": "clear", "streamSid": self.stream_sid
                 }))
             except Exception:
                 pass
+
+    async def _barge_in(self):
+        await self._cancel_tts()
 
     async def _send_dtmf(self, digit: str):
         try:
@@ -672,33 +758,40 @@ class CallSession:
             log.error("[%s] DTMF send failed: %s", self.call_sid, e)
 
     # ── Hold + Silence Watchdog ─────────────────────────────────────────
+    def _update_hold_state(self, waiting: bool):
+        if waiting:
+            if self.hold_start is None:
+                self.hold_start = time.time()
+        else:
+            # Only a normal response to a real turn ends the hold episode.
+            # Silence alone neither starts nor resets a hold timer.
+            self.hold_start = None
+
     async def _silence_watchdog(self):
         try:
             while not self.is_call_ended:
-                silence_ms = (time.time() - self.last_activity) * 1000
-                is_holding = self.hold_start is not None
-
-                if is_holding:
-                    await asyncio.sleep(30)
-                    if (time.time() - self.hold_start) > MAX_HOLD_SEC:
-                        log.warning("[%s] Hold timeout exceeded", self.call_sid)
-                        await self._speak("I've been unable to reach a representative. I'll call back later.")
-                        await asyncio.sleep(2)
-                        await self._finalize("hold_timeout")
-                        break
-                else:
-                    await asyncio.sleep(0.5)
-                    if (silence_ms > HOLD_NUDGE_MS
-                            and time.time() - self.last_hold_nudge > 10
-                            and not self.is_bot_speaking):
-                        self.last_hold_nudge = time.time()
-                        await self._run_llm("[Hold music detected]")
-                    if silence_ms > MAX_SILENCE_MS:
-                        log.warning("[%s] Max silence", self.call_sid)
-                        await self._finalize("failed", error="Max silence")
-                        break
+                await asyncio.sleep(0.5)
+                await self._check_timeouts(time.time())
         except asyncio.CancelledError:
             pass
+
+    async def _check_timeouts(self, now: float):
+        # Never create an overlapping turn, or timeout while a queued answer
+        # is about to be processed. Hold announcements themselves are handled
+        # by the normal WAITING decision, not guessed from silence.
+        if (self.is_call_ended or self.is_bot_speaking
+                or self.turn_lock.locked() or not self.segment_queue.empty()):
+            return
+        async with self.turn_lock:
+            if self.hold_start is not None:
+                if now - self.hold_start > MAX_HOLD_SEC:
+                    log.warning("[%s] Hold timeout exceeded", self.call_sid)
+                    await self._speak("I've been unable to reach a representative. I'll call back later.")
+                    await self._wait_for_playback()
+                    await self._finalize("hold_timeout")
+            elif (now - self.last_activity) * 1000 > MAX_SILENCE_MS:
+                log.warning("[%s] Max silence", self.call_sid)
+                await self._finalize("failed", error="Max silence")
 
     # ── End-of-call detection ────────────────────────────────────────────
     _END_PHRASES = [
